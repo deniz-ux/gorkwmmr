@@ -2,13 +2,18 @@
 Subclasses the bokeh serve commandline handler to extend it in various
 ways.
 """
+from __future__ import annotations
 
 import ast
 import base64
+import contextlib
+import importlib
 import logging
 import os
 import pathlib
+import sys
 
+from collections.abc import Iterator
 from glob import glob
 from types import ModuleType
 
@@ -36,6 +41,16 @@ from ..io.state import state
 from ..util import fullpath
 
 log = logging.getLogger(__name__)
+
+@contextlib.contextmanager
+def add_sys_path(path: str | os.PathLike) -> Iterator[None]:
+    """Temporarily add the given path to `sys.path`."""
+    path = os.fspath(path)
+    try:
+        sys.path.insert(0, path)
+        yield
+    finally:
+        sys.path.remove(path)
 
 def parse_var(s):
     """
@@ -209,6 +224,10 @@ class Serve(_BkServe):
             help    = "The endpoint for the liveness API.",
             default = "liveness"
         )),
+        ('--plugins', dict(
+            action  = 'append',
+            type    = str
+        ))
     )
 
     # Supported file extensions
@@ -388,6 +407,28 @@ class Serve(_BkServe):
                     "Supply OAuth provider either using environment variable "
                     "or via explicit argument, not both."
                 )
+
+        for plugin in (args.plugins or []):
+            try:
+                with add_sys_path('./'):
+                    plugin_module = importlib.import_module(plugin)
+            except ModuleNotFoundError:
+                import pdb
+                pdb.set_trace()
+                raise Exception(
+                    f'Specified plugin module {plugin!r} could not be found. '
+                    'Ensure the module exists and is in the right path. '
+                )
+            try:
+                routes = getattr(plugin_module, 'ROUTES')
+            except AttributeError:
+                raise Exception(
+                    f'The plugin module {plugin!r} does not declare '
+                    'a ROUTES variable. Ensure that the module provides '
+                    'a list of ROUTES to serve.'
+                )
+            patterns.extend(routes)
+
         if args.oauth_provider:
             config.oauth_provider = args.oauth_provider
         if config.oauth_provider:
